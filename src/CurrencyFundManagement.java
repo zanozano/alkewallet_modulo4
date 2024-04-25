@@ -1,116 +1,108 @@
 import java.sql.*;
 import java.util.Scanner;
-import java.util.UUID;
 
 public class CurrencyFundManagement {
 
     public static void main(String[] args) {
 
-        Scanner scanner = new Scanner(System.in);
+        String userEmail = args[0];
+        Navigation navigation = new Navigation() {
 
-        while (true) {
-            System.out.println("Select currency");
-            System.out.println("1. USD");
-            System.out.println("2. EUR");
-            System.out.println("3. THB");
-            System.out.println("4. CNY");
-            System.out.println("5. Back");
-            System.out.println("Choose an option:");
+            //menu
+            @Override
+            public void showMenu(String userEmail) {
+                try (Scanner scanner = new Scanner(System.in)) {
+                    System.out.println("""
+                    Select currency
+                    1. USD
+                    2. EUR
+                    3. THB
+                    4. CNY
+                    5. Back
+                    Choose an option:""");
 
-            int choice = scanner.nextInt();
-
-            switch (choice) {
-                case 1:
-                    changeCurrency("USD");
-                    break;
-                case 2:
-                    changeCurrency("EUR");
-                    break;
-                case 3:
-                    changeCurrency("THB");
-                    break;
-                case 4:
-                    changeCurrency("CNY");
-                    break;
-                case 5:
-                    AccountMenu.main(new String[]{});
-                    return;
-                default:
-                    System.out.println("Invalid choice.");
+                    int choice = scanner.nextInt();
+                    switch (choice) {
+                        case 1:
+                            changeCurrency("USD", userEmail);
+                            break;
+                        case 2:
+                            changeCurrency("EUR", userEmail);
+                            break;
+                        case 3:
+                            changeCurrency("THB", userEmail);
+                            break;
+                        case 4:
+                            changeCurrency("CNY", userEmail);
+                            break;
+                        case 5:
+                            AccountMenu.main(new String[]{userEmail});
+                            break;
+                        default:
+                            System.out.println("Invalid choice.");
+                    }
+                } catch (Exception e) {
+                    System.out.println("Error: " + e.getMessage());
+                }
             }
-        }
-    }
 
-    private static void changeCurrency(String toCurrency) {
-        Scanner scanner = new Scanner(System.in);
+            public void changeCurrency(String toCurrency, String userEmail) {
+                try (Scanner scanner = new Scanner(System.in)) {
+                    System.out.println("Enter amount in CLP to exchange:");
+                    double amountCLP = scanner.nextDouble();
 
-        System.out.println("Enter amount in CLP to exchange:");
-        double amountCLP = scanner.nextDouble();
+                    try (Connection connection = DriverManager.getConnection(Server.url, Server.user, Server.password)) {
 
-        try (Connection connection = DriverManager.getConnection(Main.url, Main.user, Main.password)) {
+                        // reduce money from CLP Account
+                        String updateCurrenciesQuery = "UPDATE balances AS b " +
+                                "SET amount = amount - ? " +
+                                "FROM accounts AS a " +
+                                "JOIN users AS u ON a.user_id = u.id " +
+                                "WHERE b.account_id = a.id " +
+                                "AND u.email = ? " +
+                                "AND b.currency_code = 'CLP'";
 
-            String selectQuery = "SELECT id " +
-                    "FROM accounts " +
-                    "WHERE user_id = (" +
-                    "SELECT id " +
-                    "FROM users " +
-                    "WHERE email = ?" +
-                    ") " +
-                    "AND currency_code = 'CLP'";
+                        PreparedStatement preparedStatementUpdateCurrencies = connection.prepareStatement(updateCurrenciesQuery);
+                        preparedStatementUpdateCurrencies.setDouble(1, amountCLP * getExchangeRate(toCurrency));
+                        preparedStatementUpdateCurrencies.setString(2, userEmail);
+                        preparedStatementUpdateCurrencies.executeUpdate();
 
-            PreparedStatement preparedStatementAccountId = connection.prepareStatement(selectQuery);
-            preparedStatementAccountId.setString(1, Server.userEmail);
-            ResultSet resultSetAccountId = preparedStatementAccountId.executeQuery();
+                        // add money to [currency_code] Account
+                        String updateToCurrencyQuery = "UPDATE balances AS b " +
+                                "SET amount = amount + ? " +
+                                "FROM accounts AS a " +
+                                "JOIN users AS u ON a.user_id = u.id " +
+                                "WHERE b.account_id = a.id " +
+                                "AND u.email = ? " +
+                                "AND b.currency_code = ? ";
 
-            UUID accountId;
+                        PreparedStatement preparedStatementUpdateToCurrency = connection.prepareStatement(updateToCurrencyQuery);
+                        preparedStatementUpdateToCurrency.setDouble(1, amountCLP * getExchangeRate(toCurrency));
+                        preparedStatementUpdateToCurrency.setString(2, userEmail);
+                        preparedStatementUpdateToCurrency.setString(3, toCurrency);
+                        preparedStatementUpdateToCurrency.executeUpdate();
 
-            if (resultSetAccountId.next()) {
-                accountId = (UUID) resultSetAccountId.getObject("id");
+                        System.out.printf("Successfully exchanged %.2f CLP to %.2f %s at a rate of %.4f%n", amountCLP, amountCLP * getExchangeRate(toCurrency), toCurrency, getExchangeRate(toCurrency));
 
-                String updateCurrenciesQuery = "UPDATE currencies " +
-                        "SET balance = balance - ? " +
-                        "WHERE currency_code = 'CLP'";
-
-                PreparedStatement preparedStatementUpdateCurrencies = connection.prepareStatement(updateCurrenciesQuery);
-                preparedStatementUpdateCurrencies.setDouble(1, amountCLP * getExchangeRate(toCurrency));
-                preparedStatementUpdateCurrencies.executeUpdate();
-
-                String updateToCurrencyQuery = "UPDATE currencies " +
-                        "SET balance = balance + ? " +
-                        "WHERE currency_code = ?";
-
-                PreparedStatement preparedStatementUpdateToCurrency = connection.prepareStatement(updateToCurrencyQuery);
-                preparedStatementUpdateToCurrency.setDouble(1, amountCLP * getExchangeRate(toCurrency));
-                preparedStatementUpdateToCurrency.setString(2, toCurrency);
-                preparedStatementUpdateToCurrency.executeUpdate();
-
-                String insertCurrenciesExchangeQuery = "INSERT INTO currencies_exchange " +
-                        "(account_id, from_currency_code, to_currency_code, amount, exchange_rate) " +
-                        "VALUES (?, 'CLP', ?, ?, ?)";
-
-                PreparedStatement preparedStatementInsertCurrenciesExchange = connection.prepareStatement(insertCurrenciesExchangeQuery);
-                preparedStatementInsertCurrenciesExchange.setObject(1, accountId);
-                preparedStatementInsertCurrenciesExchange.setString(2, toCurrency);
-                preparedStatementInsertCurrenciesExchange.setDouble(3, amountCLP);
-                preparedStatementInsertCurrenciesExchange.setDouble(4, getExchangeRate(toCurrency));
-                preparedStatementInsertCurrenciesExchange.executeUpdate();
-
-                System.out.println("Currency changed successfully.");
-            } else {
-                System.out.println("Account not found.");
+                        // show menu
+                        showMenu(userEmail);
+                    } catch (SQLException e) {
+                        System.out.println("Error connecting to database: " + e.getMessage());
+                    }
+                }
             }
-        } catch (SQLException e) {
-            System.out.println("Error connecting to database: " + e.getMessage());
-        }
-    }
 
-    private static double getExchangeRate(String currency) {
-        return switch (currency) {
-            case "USD" -> 0.005;
-            case "EUR" -> 0.006;
-            case "THB" -> 0.15;
-            case "CNY" -> 0.032;
-            default -> 1.0;
+            public double getExchangeRate(String currency) {
+                return switch (currency) {
+                    case "USD" -> 0.00108;
+                    case "EUR" -> 0.00100;
+                    case "THB" -> 0.0396045;
+                    case "CNY" -> 0.00780;
+                    default -> 1.0;
+                };
+            }
         };
+
+        navigation.showMenu(userEmail);
     }
 }
