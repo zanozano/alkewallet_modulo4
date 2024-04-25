@@ -7,18 +7,43 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.net.InetSocketAddress;
 import java.io.IOException;
+import java.sql.*;
+import java.util.Properties;
 
 public class Server {
 
-    public static String userEmail;
-    public static String userPassword;
+    public static String url;
+    public static String user;
+    public static String password;
 
+    //start server
     public static void startServer() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(3000), 0);
         server.createContext("/", new GetData());
         server.setExecutor(null);
         server.start();
         System.out.println("Server started on port 3000");
+    }
+
+    //load variables
+    public static void loadEnvVariables() {
+        try {
+            Properties envProperties = new Properties();
+
+            try (InputStream input = Main.class.getResourceAsStream("/resources/env.properties")) {
+                if (input == null) {
+                    throw new IOException("File not found");
+                }
+                envProperties.load(input);
+            }
+
+            url = envProperties.getProperty("DATABASE_URL");
+            user = envProperties.getProperty("DATABASE_USER");
+            password = envProperties.getProperty("DATABASE_PASSWORD");
+
+        } catch (IOException e) {
+            System.err.println("Error loading environment variables: " + e.getMessage());
+        }
     }
 
     //read data
@@ -79,44 +104,57 @@ public class Server {
 
             String requestBody = new String(requestBodyBytes, StandardCharsets.UTF_8);
 
-            System.out.println("Request body: " + requestBody);
-
             Gson gson = new Gson();
-            UserCredentials userCredentials = gson.fromJson(requestBody, UserCredentials.class);
-
-            userEmail = userCredentials.getEmail();
-            userPassword = userCredentials.getPassword();
-
-            System.out.println("User Email: " + userEmail);
-            System.out.println("User Password: " + userPassword);
-
-            Main.validateAccount(userEmail, userPassword);
+            User user = gson.fromJson(requestBody, User.class);
 
             JsonObject jsonResponse = new JsonObject();
-            jsonResponse.addProperty("success", Main.isLoggedIn);
+
+            if (validateAccount(user.getUserEmail(), user.getUserPassword())) {
+                jsonResponse.addProperty("success", true);
+                jsonResponse.addProperty("message", "Logged successfully");
+                jsonResponse.addProperty("email", user.getUserEmail());
+                new Thread(() ->AccountMenu.main(new String[]{user.getUserEmail()})).start();
+            } else {
+                jsonResponse.addProperty("error", false);
+                jsonResponse.addProperty("message", "Invalid email or password");
+                jsonResponse.addProperty("email", user.getUserEmail());
+            }
 
             String responseString = jsonResponse.toString();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, responseString.getBytes().length);
 
-            sendResponse(exchange, new ByteArrayInputStream(responseString.getBytes(StandardCharsets.UTF_8)), 200);
-            System.out.println("Send Request");
+            try (OutputStream responseBody = exchange.getResponseBody()) {
+                responseBody.write(responseString.getBytes());
+            }
         }
     }
 
-    //credentials
-    public static class UserCredentials {
-        private String email;
-        private String password;
+    //login
+    public static boolean validateAccount(String userEmail, String userPassword) {
 
-        public String getEmail() {
-            return email;
-        }
+        String selectQuery = "SELECT * FROM users WHERE email = ? AND password = ?";
+        boolean isAuthenticated = false;
 
-        public void setEmail(String email) {
-            this.email = email;
-        }
+        try (Connection connection = DriverManager.getConnection(url, user, password);
+             PreparedStatement preparedStatement = connection.prepareStatement(selectQuery)) {
 
-        public String getPassword() {
-            return password;
+            preparedStatement.setString(1, userEmail);
+            preparedStatement.setString(2, userPassword);
+
+            try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                if (resultSet.next()) {
+                    System.out.println("User logged successfully");
+                    isAuthenticated = true;
+                } else {
+                    System.out.println("Invalid email or password.");
+                }
+            }
+
+        } catch (SQLException e) {
+            System.out.println("Error connecting to database: " + e.getMessage());
         }
+        return isAuthenticated;
     }
+
 }
